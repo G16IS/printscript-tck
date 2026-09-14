@@ -7,7 +7,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.IntUnaryOperator;
+import java.util.Set;
 
 /**
  * Translates the TCK formatter config into the config our formatter expects.
@@ -15,52 +15,61 @@ import java.util.function.IntUnaryOperator;
  * The TCK hands us a flat object keyed by ITS rule names:
  *   { "enforce-spacing-before-colon-in-declaration": true, "line-breaks-after-println": 2 }
  *
- * Our formatter reads a list of rule specs keyed by OUR rule names:
- *   { "rules": [ { "type": "space-before-colon", "enabled": true },
- *                { "type": "newlines-before-println", "count": 3 } ] }
+ * Our formatter always receives all four G16 userBinding rules:
+ *   { "rules": [ { "type": "space-before-colon", "enabled": false },
+ *                { "type": "space-after-colon", "enabled": false },
+ *                { "type": "space-around-assign", "enabled": false },
+ *                { "type": "newlines-before-println", "count": 0 } ] }
  *
- * The RULES table below is the whole translation: left = their name, right = ours.
- * Names marked FILLER- are placeholders, replace them with the real rule names.
+ * Missing TCK keys stay disabled / count 0. Language-fixed and v1.1 keys are ignored.
  */
 public class TckFormatterConfigAdapter {
 
-    private static final Map<String, Rule> RULES = Map.ofEntries(
-            // --- 1.0 ---
-            Map.entry("enforce-spacing-before-colon-in-declaration", Rule.enabled("space-before-colon")),
-            Map.entry("enforce-spacing-after-colon-in-declaration", Rule.enabled("space-after-colon")),
-            Map.entry("enforce-spacing-around-equals", Rule.enabled("space-around-assign")),
-            // their "no spacing" flag is our "spacing" rule turned off
-            Map.entry("enforce-no-spacing-around-equals", Rule.negated("space-around-assign")),
-            // they count BLANK lines after the println, we count newlines before the next one
-            Map.entry("line-breaks-after-println", Rule.count("newlines-before-println", blankLines -> blankLines + 1)),
-            Map.entry("mandatory-line-break-after-statement", Rule.enabled("FILLER-newline-after-statement")),
-            Map.entry("mandatory-space-surrounding-operations", Rule.enabled("FILLER-space-around-operator")),
-            Map.entry("mandatory-single-space-separation", Rule.enabled("FILLER-single-space-separation")),
-
-            // --- 1.1 ---
-            Map.entry("if-brace-same-line", Rule.enabled("FILLER-if-brace-same-line")),
-            Map.entry("if-brace-below-line", Rule.enabled("FILLER-if-brace-below-line")),
-            Map.entry("indent-inside-if", Rule.count("FILLER-indent-inside-if", spaces -> spaces))
+    private static final Set<String> IGNORED = Set.of(
+            "mandatory-line-break-after-statement",
+            "mandatory-space-surrounding-operations",
+            "mandatory-single-space-separation",
+            "if-brace-same-line",
+            "if-brace-below-line",
+            "indent-inside-if"
     );
 
     public InputStream adapt(InputStream tckConfig) {
         final var theirRules = FlatJson.parse(readAll(tckConfig));
-        final var ourRules = new StringBuilder("{\"rules\":[");
 
-        var first = true;
+        var spaceBeforeColon = false;
+        var spaceAfterColon = false;
+        var spaceAroundAssign = false;
+        var newlinesBeforePrintln = 0;
+
         for (final var theirRule : theirRules.entrySet()) {
-            final var rule = RULES.get(theirRule.getKey());
-            if (rule == null) {
-                throw new IllegalArgumentException(
-                        "Unmapped TCK formatter rule: '" + theirRule.getKey() + "'. Add it to TckFormatterConfigAdapter.RULES.");
+            final var key = theirRule.getKey();
+            if (IGNORED.contains(key)) {
+                continue;
             }
-            if (!first) ourRules.append(',');
-            ourRules.append(rule.toSpec(theirRule.getValue()));
-            first = false;
+            switch (key) {
+                case "enforce-spacing-before-colon-in-declaration" ->
+                        spaceBeforeColon = Boolean.parseBoolean(theirRule.getValue());
+                case "enforce-spacing-after-colon-in-declaration" ->
+                        spaceAfterColon = Boolean.parseBoolean(theirRule.getValue());
+                case "enforce-spacing-around-equals" ->
+                        spaceAroundAssign = Boolean.parseBoolean(theirRule.getValue());
+                case "enforce-no-spacing-around-equals" ->
+                        spaceAroundAssign = !Boolean.parseBoolean(theirRule.getValue());
+                case "line-breaks-after-println" ->
+                        newlinesBeforePrintln = Integer.parseInt(theirRule.getValue());
+                default -> throw new IllegalArgumentException(
+                        "Unmapped TCK formatter rule: '" + key + "'. Add it to TckFormatterConfigAdapter.");
+            }
         }
 
-        ourRules.append("]}");
-        return new ByteArrayInputStream(ourRules.toString().getBytes(StandardCharsets.UTF_8));
+        final var ourRules = "{\"rules\":["
+                + "{\"type\":\"space-before-colon\",\"enabled\":" + spaceBeforeColon + "},"
+                + "{\"type\":\"space-after-colon\",\"enabled\":" + spaceAfterColon + "},"
+                + "{\"type\":\"space-around-assign\",\"enabled\":" + spaceAroundAssign + "},"
+                + "{\"type\":\"newlines-before-println\",\"count\":" + newlinesBeforePrintln + "}"
+                + "]}";
+        return new ByteArrayInputStream(ourRules.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String readAll(InputStream inputStream) {
@@ -68,39 +77,6 @@ public class TckFormatterConfigAdapter {
             return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
-        }
-    }
-
-    /**
-     * One of our rules, plus how to derive its value from the TCK value.
-     */
-    private record Rule(String type, String param, boolean invert, IntUnaryOperator countMapper) {
-
-        /** Boolean rule: their flag is our "enabled" as is. */
-        static Rule enabled(String type) {
-            return new Rule(type, "enabled", false, null);
-        }
-
-        /** Boolean rule: their flag is our "enabled" inverted (their "no-spacing" style flags). */
-        static Rule negated(String type) {
-            return new Rule(type, "enabled", true, null);
-        }
-
-        /** Numeric rule: their number mapped onto our "count". */
-        static Rule count(String type, IntUnaryOperator countMapper) {
-            return new Rule(type, "count", false, countMapper);
-        }
-
-        String toSpec(String theirValue) {
-            return "{\"type\":\"" + type + "\",\"" + param + "\":" + value(theirValue) + "}";
-        }
-
-        private String value(String theirValue) {
-            if (countMapper != null) {
-                return String.valueOf(countMapper.applyAsInt(Integer.parseInt(theirValue)));
-            }
-            final var flag = Boolean.parseBoolean(theirValue);
-            return String.valueOf(invert != flag);
         }
     }
 
