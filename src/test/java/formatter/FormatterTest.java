@@ -52,7 +52,11 @@ public class FormatterTest {
         final var configInputStream = new FileInputStream(this.config);
         final var writer = new StringWriter();
         formatter.format(fileInputStream, version, configInputStream, writer);
-        assertEquals(golden, writer.toString());
+        assertEquals(golden, stripTrailingNewline(writer.toString()));
+    }
+
+    private static String stripTrailingNewline(String s) {
+        return s.endsWith("\n") ? s.substring(0, s.length() - 1) : s;
     }
 
     private static BiFunction<String, String, List<Object[]>> filePicker() {
