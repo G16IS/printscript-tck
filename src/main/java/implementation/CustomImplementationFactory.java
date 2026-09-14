@@ -18,8 +18,7 @@ public class CustomImplementationFactory implements PrintScriptFactory {
     public PrintScriptFormatter formatter() {
         // your PrintScript formatter should be returned here.
         // make sure to ADAPT your formatter to PrintScriptFormatter interface.
-        throw new NotImplementedException("Needs implementation"); // TODO: implement
-
+        return new PrintScriptFormatterImpl();
         // Dummy impl: return (src, version, config, writer) -> { };
     }
 
